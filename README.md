@@ -3,46 +3,77 @@ A production-ready MCP server that exposes 50+ Databricks workspace operations t
 
 > **⚠️ DISCLAIMER**: This is **NOT** an official Databricks product and is **NOT** supported by Databricks. This is a community project that uses the Databricks SDK to provide MCP integration. Use at your own risk. For official Databricks support, please contact Databricks directly.
 
-## 🚀 Quick Start (5 minutes)
+## 🚀 Quick Start — Claude Code (stdio)
+
+This is the primary, recommended local setup: Claude Code launches the server as a stdio
+subprocess and credentials come from a `.env` file.
 
 ### 1. Set Your Credentials
 
-```bash
-export DATABRICKS_HOST="https://your-workspace.cloud.databricks.com"
-export DATABRICKS_TOKEN="dapi..."  # Your Personal Access Token
-```
-
-### 2. Start the Server
+Copy `.env.example` to `.env` and fill it in. OAuth M2M (service principal) is preferred:
 
 ```bash
-cd databricks_cli_mcp
-./start_local_mcp.sh
+DATABRICKS_HOST=https://your-workspace.cloud.databricks.com
+DATABRICKS_CLIENT_ID=<service-principal-application-id>
+DATABRICKS_CLIENT_SECRET=<oauth-secret>
+# — or, instead of the two lines above, a PAT:
+# DATABRICKS_TOKEN=dapi...
 ```
 
-Server runs at: `http://localhost:8080/mcp`
+### 2. Register the MCP Server
 
-### 3. Configure Cursor
-
-Add to Cursor MCP settings (`~/.cursor/mcp.json`):
+Add to your MCP client config (e.g. `~/.claude.json` under `mcpServers`):
 
 ```json
 {
   "mcpServers": {
     "databricks": {
-      "url": "http://localhost:8080/mcp"
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory", "/path/to/databricks-mcp-server",
+        "--env-file", "/path/to/databricks-mcp-server/.env",
+        "mcp_stdio.py"
+      ]
     }
   }
 }
 ```
 
-### 4. Start Using!
+`uv run --env-file .env mcp_stdio.py` loads `.env`, starts the FastMCP server over stdio, and
+`auth.py` resolves the credentials from the environment automatically.
 
-In Cursor, try:
+### 3. Start Using!
+
 ```
-"List my Databricks clusters"
+"List my Databricks catalogs"
 "Show me my SQL warehouses"
 "Execute query: SELECT * FROM samples.nyctaxi.trips LIMIT 10"
 ```
+
+### Alternative: HTTP transport (Cursor, remote clients)
+
+For Cursor or any client that connects over HTTP, run the server with the streamable-http
+transport instead and point the client at the URL:
+
+```bash
+uv run --env-file .env python server.py --port 8000   # serves http://localhost:8000/mcp
+# or, PAT-from-env convenience wrapper on :8080:
+python local_mcp_server.py
+```
+
+```json
+{
+  "mcpServers": {
+    "databricks": { "url": "http://localhost:8000/mcp" }
+  }
+}
+```
+
+Over HTTP you can also pass credentials per request as `x-databricks-host` +
+`x-databricks-client-id`/`x-databricks-client-secret` (or `x-databricks-token`) headers
+instead of using `.env`.
 
 ---
 
@@ -67,8 +98,10 @@ In Cursor, try:
 ```
 databricks_cli_mcp/
 ├── README.md              # This file
-├── server.py              # Main MCP server (FastMCP)
-├── local_mcp_server.py    # Local server with PAT auth
+├── server.py              # FastMCP server + tool registration (streamable-http transport)
+├── mcp_stdio.py           # stdio entry point (Claude Code / local MCP clients)
+├── app.py                 # ASGI app for Databricks Apps (uvicorn app:app)
+├── local_mcp_server.py    # Local HTTP server with PAT auth
 ├── start_local_mcp.sh     # Quick start script
 │
 ├── auth.py                # Authentication logic
@@ -95,9 +128,9 @@ databricks_cli_mcp/
 
 ## 🔐 Authentication
 
-### Option 1: PAT (Personal Access Token) - Recommended
+### Option 1: PAT (Personal Access Token) — simplest
 
-**Best for**: Development, personal use
+**Best for**: Quick experiments, personal use. Note PATs expire (90 days) and must be renewed manually.
 
 ```bash
 # Get your PAT from Databricks UI
@@ -112,9 +145,9 @@ export DATABRICKS_TOKEN="dapi..."
 **Pros**: ✅ Simple, ✅ Quick, ✅ Works immediately  
 **Cons**: ⚠️ 90-day expiry, ⚠️ Manual renewal
 
-### Option 2: M2M OAuth (Advanced)
+### Option 2: M2M OAuth (recommended)
 
-**Best for**: Production, teams, CI/CD
+**Best for**: Production, teams, CI/CD — and the default for the local stdio setup above (auto-refreshing, no manual token renewal).
 
 1. Create service principal in Databricks
 2. Generate OAuth secret
@@ -131,6 +164,13 @@ export DATABRICKS_CLIENT_SECRET="<oauth-secret>"
 
 **Pros**: ✅ Auto-refresh, ✅ Better security, ✅ Team sharing  
 **Cons**: ⚠️ Requires service principal setup
+
+> **Local / stdio server (e.g. Claude Code):** `auth.py` reads `DATABRICKS_CLIENT_ID` +
+> `DATABRICKS_CLIENT_SECRET` (M2M) or `DATABRICKS_TOKEN` (PAT) directly from the
+> environment — typically via `uv run --env-file .env mcp_stdio.py`. No OAuth proxy is
+> needed for local use; the same credentials can also be supplied per-request over the
+> HTTP transport as `x-databricks-client-id` / `x-databricks-client-secret` (or
+> `x-databricks-token`) headers.
 
 ---
 
@@ -251,6 +291,16 @@ echo $DATABRICKS_TOKEN
 curl -H "Authorization: Bearer $DATABRICKS_TOKEN" \
   $DATABRICKS_HOST/api/2.0/clusters/list
 ```
+
+### TLS error: `CERTIFICATE_VERIFY_FAILED` behind a corporate proxy
+
+If auth fails with `SSL: CERTIFICATE_VERIFY_FAILED — unable to get local issuer
+certificate`, you're behind a TLS-intercepting proxy (e.g. **Zscaler**) whose root CA
+is trusted by your OS but not by Python's bundled `certifi`. The server calls
+`truststore.inject_into_ssl()` at startup so Python verifies against the **OS trust
+store** — just ensure the `truststore` dependency is installed (`uv sync` /
+`pip install -r requirements.txt`). If you manage certificates manually instead, point
+`SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` at a PEM bundle containing the proxy's root CA.
 
 ### Cursor not connecting
 
