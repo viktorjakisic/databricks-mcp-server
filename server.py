@@ -1,6 +1,19 @@
 """Databricks CLI MCP Server with WebSocket and async operations support."""
 
 import sys
+
+# Use the OS trust store for TLS verification before any HTTPS client is created.
+# Corporate TLS-intercepting proxies (e.g. Zscaler) present a certificate signed by
+# a root CA that lives in the OS trust store but not in Python's bundled `certifi`,
+# which otherwise breaks the Databricks SDK's OAuth/API calls with
+# "CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate".
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except Exception as _truststore_err:  # pragma: no cover - best effort
+    print(f"WARNING: truststore not active, falling back to certifi: {_truststore_err}",
+          file=sys.stderr)
+
 import argparse
 import asyncio
 from typing import Optional, Annotated
