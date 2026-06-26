@@ -26,6 +26,8 @@ mcp_server.log
 # Environment
 .env
 .env.local
+.env.new-sub
+.env.OLD-*
 
 # OAuth tokens
 .databricks_oauth_token
